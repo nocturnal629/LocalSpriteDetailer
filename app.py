@@ -263,6 +263,16 @@ def _image_data_url(path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
+QA_MAX_TOKENS = 700
+# CloudIQ intermittently crashes (returns a raw, unhandled-exception HTML page)
+# on this request shape (long prompt + 2 images); retrying the identical
+# request often succeeds, so retry a couple of times before giving up.
+QA_MAX_ATTEMPTS = 3
+QA_RAW_DISPLAY_LIMIT = 300
+
+# The verdict line is asked for FIRST, before any explanation. Some of CloudIQ's
+# models "think out loud" in the visible reply and can run out of max_tokens
+# mid-thought - putting VERDICT/REASON last risked it never being emitted at all.
 QA_PROMPT = (
     "You are QA-checking an AI-detailed pixel-art game sprite against its original "
     "source image. The FIRST image is the ORIGINAL sprite. The SECOND image is the "
@@ -273,7 +283,8 @@ QA_PROMPT = (
     "and extra detail are expected and should NOT count against it — only flag it "
     "if the character/object design itself changed (different colors, proportions, "
     "pose, or missing/added features).\n\n"
-    "Respond in exactly this format and nothing else:\n"
+    "Answer with the verdict line FIRST, before any explanation. Do not write "
+    "anything before it. Use exactly this format:\n"
     "VERDICT: PRESERVED or DRIFTED\n"
     "REASON: <one short sentence>"
 )
@@ -282,9 +293,65 @@ QA_PROMPT = (
 def _parse_qa_reply(reply: str):
     verdict_match = re.search(r"VERDICT:\s*(PRESERVED|DRIFTED)", reply, re.IGNORECASE)
     reason_match = re.search(r"REASON:\s*(.+)", reply, re.IGNORECASE)
-    verdict = verdict_match.group(1).upper() if verdict_match else "UNKNOWN"
-    reason = reason_match.group(1).strip() if reason_match else reply.strip()
-    return verdict, reason
+    if verdict_match:
+        verdict = verdict_match.group(1).upper()
+        reason = reason_match.group(1).strip() if reason_match else ""
+        return verdict, reason
+
+    # Some models "think out loud" instead of following the exact VERDICT:/REASON:
+    # format - fall back to whichever of the two words appears last (the
+    # conclusion typically comes after the reasoning, not before it).
+    loose_matches = list(re.finditer(r"\b(PRESERVED|DRIFTED)\b", reply, re.IGNORECASE))
+    if loose_matches:
+        verdict = loose_matches[-1].group(1).upper()
+        reason = reply.strip()
+        if len(reason) > QA_RAW_DISPLAY_LIMIT:
+            reason = reason[:QA_RAW_DISPLAY_LIMIT].rstrip() + "…"
+        return verdict, reason
+
+    reason = reply.strip()
+    if len(reason) > QA_RAW_DISPLAY_LIMIT:
+        reason = reason[:QA_RAW_DISPLAY_LIMIT].rstrip() + "…"
+    return "UNKNOWN", reason
+
+
+def _call_cloudiq_vision(messages, max_tokens, max_attempts=QA_MAX_ATTEMPTS):
+    """POST to CloudIQ's chat/completions with a small automatic retry.
+
+    Empirically, CloudIQ occasionally returns a raw, unhandled-exception HTML
+    page (not its usual sanitized JSON error) for multimodal requests - retrying
+    the identical request often succeeds. A clean JSON error (bad key, rate
+    limit, etc.) is NOT retried since that won't change on a retry.
+    """
+    last_error = "No response from CloudIQ"
+    for _ in range(max_attempts):
+        try:
+            resp = requests.post(
+                f"{CLOUDIQ_URL}/v1/chat/completions",
+                headers={"X-API-Key": CLOUDIQ_API_KEY, "Content-Type": "application/json"},
+                json={"messages": messages, "max_tokens": max_tokens},
+                timeout=90,
+            )
+        except requests.RequestException as e:
+            last_error = f"Could not reach CloudIQ at {CLOUDIQ_URL}: {e}"
+            continue
+
+        if resp.ok:
+            try:
+                return resp.json(), None
+            except ValueError:
+                last_error = "CloudIQ returned a malformed response"
+                continue
+
+        try:
+            detail = resp.json().get("error", resp.text)
+        except ValueError:
+            last_error = "CloudIQ hit an internal error and returned a non-JSON response"
+            continue
+
+        return None, f"CloudIQ QA check failed: {detail}"
+
+    return None, last_error
 
 
 @app.route("/qa-check", methods=["POST"])
@@ -320,24 +387,10 @@ def qa_check():
         }
     ]
 
-    try:
-        resp = requests.post(
-            f"{CLOUDIQ_URL}/v1/chat/completions",
-            headers={"X-API-Key": CLOUDIQ_API_KEY, "Content-Type": "application/json"},
-            json={"messages": messages, "max_tokens": 500},
-            timeout=90,
-        )
-    except requests.RequestException as e:
-        return jsonify({"error": f"Could not reach CloudIQ at {CLOUDIQ_URL}: {e}"}), 502
+    resp_json, error = _call_cloudiq_vision(messages, QA_MAX_TOKENS)
+    if error:
+        return jsonify({"error": error}), 502
 
-    if not resp.ok:
-        try:
-            detail = resp.json().get("error", resp.text)
-        except ValueError:
-            detail = resp.text
-        return jsonify({"error": f"CloudIQ QA check failed: {detail}"}), 502
-
-    resp_json = resp.json()
     try:
         reply = resp_json["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):

@@ -91,7 +91,11 @@ curl http://127.0.0.1:5050   # this frontend
    drifting into something else. This is a separate, on-demand network call (not run
    automatically) and requires `CLOUDIQ_API_KEY` to be set — see "Optional: enabling
    the design-fidelity QA check" above. It can take up to a minute since it may fall
-   back across a few models if the first one is unavailable.
+   back across a few models if the first one is unavailable, and it retries
+   automatically up to 3 times — CloudIQ has been observed to intermittently return
+   a raw server error for this kind of request (long prompt + 2 images), especially
+   under repeated use in a short window; if it still fails after retries, wait a
+   minute and try again. See "Known limitations" below.
 
 First generation after starting ComfyUI is slow (~2 minutes) because it has to load
 the model into VRAM. Every generation after that is much faster.
@@ -124,3 +128,12 @@ different project), drop the new `.safetensors` file into the matching ComfyUI
 - The design-fidelity QA check sends both images to CloudIQ (an external, though
   Accenture-internal, service) as base64 data — don't use it on sprites you don't
   want leaving this machine.
+- CloudIQ has been observed (2026-09-27 testing) to intermittently crash on this
+  feature's specific request shape (a long prompt plus 2 embedded images), returning
+  a raw unhandled-exception page instead of clean JSON — confirmed to originate from
+  CloudIQ's own server, not a network issue here. It got noticeably worse the more
+  requests were sent in a short window during testing, which points at CloudIQ's
+  rate-limiter (10/min) rather than the prompt itself, but that's not confirmed
+  without seeing CloudIQ's Render logs. This app retries up to 3 times to paper over
+  it, which usually works but isn't a real fix — if the QA button becomes
+  consistently unreliable, it likely needs a look on the CloudIQ side.
