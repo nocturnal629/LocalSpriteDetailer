@@ -32,6 +32,13 @@
     text-align: center; user-select: none;
   }
   #resizeHandle:hover, #resizeHandle.dragging { color: #4c8bf5; }
+  .qa-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; flex-wrap: wrap; }
+  #qaCheck { padding: 6px 12px; background: #333; border: 1px solid #555; border-radius: 6px; color: #eee; font-size: 12px; cursor: pointer; }
+  #qaCheck:disabled { opacity: 0.6; cursor: not-allowed; }
+  #qaResult { font-size: 12px; color: #999; }
+  #qaResult.preserved { color: #7fd48a; }
+  #qaResult.drifted { color: #ffb347; }
+  #qaResult.error { color: #ff6b6b; }
   .settings-readout { margin-top: 14px; font-size: 11px; color: #999; background: #1e1e24; padding: 10px; border-radius: 6px; white-space: pre-wrap; }
   #status { margin-top: 10px; font-size: 12px; color: #ffb347; min-height: 16px; }
   .batch-results { margin-top: 14px; }
@@ -112,6 +119,10 @@
           </div>
         </div>
         <div id="resizeHandle" title="Drag to resize preview">⤡</div>
+      </div>
+      <div class="qa-row">
+        <button id="qaCheck">Check design fidelity</button>
+        <span id="qaResult"></span>
       </div>
       <div class="settings-readout" id="readout">No generation yet.</div>
 
@@ -270,10 +281,12 @@ document.getElementById("gen").addEventListener("click", async () => {
     const data = await res.json();
     if (!res.ok) { setStatus("Error: " + (data.error || "unknown")); btn.disabled = false; return; }
     const outputs = data.output_images.map(u => u + "?t=" + Date.now());
+    document.getElementById("beforeImg").src = data.input_image;
     document.getElementById("afterImg").src = outputs[0];
     renderBatch(outputs);
     document.getElementById("readout").textContent = JSON.stringify(data.params, null, 2);
     setStatus(`Done. ${outputs.length} output${outputs.length > 1 ? "s" : ""} generated.`);
+    clearQaResult();
     loadHistory();
   } catch (err) {
     setStatus("Request failed: " + err);
@@ -292,7 +305,10 @@ function renderBatch(urls) {
   urls.forEach(u => {
     const img = document.createElement("img");
     img.src = u;
-    img.addEventListener("click", () => { document.getElementById("afterImg").src = u; });
+    img.addEventListener("click", () => {
+      document.getElementById("afterImg").src = u;
+      clearQaResult();
+    });
     list.appendChild(img);
   });
 }
@@ -311,11 +327,63 @@ async function loadHistory() {
       document.getElementById("afterImg").src = item.output_images[0];
       renderBatch(item.output_images);
       document.getElementById("readout").textContent = JSON.stringify(item.params, null, 2);
+      clearQaResult();
     });
     list.appendChild(img);
   });
 }
 loadHistory();
+
+// Design-fidelity QA: sends the currently displayed before/after pair to a
+// CloudIQ multimodal model, which judges whether the generated detail pass
+// kept the same character design (colors/silhouette/pose) rather than
+// drifting into a different-looking sprite. Opt-in / on-demand only — it's
+// an external network call, so it never runs automatically after generate.
+function clearQaResult() {
+  const el = document.getElementById("qaResult");
+  el.textContent = "";
+  el.className = "";
+}
+
+document.getElementById("qaCheck").addEventListener("click", async () => {
+  const beforeSrc = document.getElementById("beforeImg").src;
+  const afterSrc = document.getElementById("afterImg").src;
+  if (!beforeSrc || !afterSrc) {
+    setQaResult("Generate something first.", "error");
+    return;
+  }
+
+  const btn = document.getElementById("qaCheck");
+  btn.disabled = true;
+  setQaResult("Checking with CloudIQ (can take up to a minute)...", "");
+
+  try {
+    const res = await fetch("/qa-check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input_image: beforeSrc, output_image: afterSrc }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setQaResult("Error: " + (data.error || "unknown"), "error");
+    } else if (data.verdict === "PRESERVED") {
+      setQaResult("✅ Design preserved — " + (data.reason || ""), "preserved");
+    } else if (data.verdict === "DRIFTED") {
+      setQaResult("⚠️ Design drifted — " + (data.reason || ""), "drifted");
+    } else {
+      setQaResult("❓ " + (data.reason || data.raw || "Unclear response"), "");
+    }
+  } catch (err) {
+    setQaResult("Request failed: " + err, "error");
+  }
+  btn.disabled = false;
+});
+
+function setQaResult(text, cls) {
+  const el = document.getElementById("qaResult");
+  el.textContent = text;
+  el.className = cls || "";
+}
 </script>
 </body>
 </html>

@@ -15,11 +15,24 @@ here is tied to Outlanders specifically.
   - `models/checkpoints/sd_xl_base_1.0.safetensors`
   - `models/loras/pixel-art-xl.safetensors`
   - `models/controlnet/controlnet-canny-sdxl-fp16.safetensors`
-- This frontend, with its own venv (Flask + requests).
+- This frontend, with its own venv (`pip install -r requirements.txt`: Flask, requests,
+  python-dotenv).
 
 If you ever set this up on a **different machine**, you'd need to redo the ComfyUI
 install (see the ComfyUI section of this project's chat history / ask for the steps
 again) and re-point the paths in `app.py` (see "Changing paths or models" below).
+
+### Optional: enabling the design-fidelity QA check
+
+The "Check design fidelity" button (see "Using it" below) calls out to CloudIQ, an
+Accenture-internal gateway to hosted vision-capable LLMs, to sanity-check that a
+generated sprite still looks like the original character. This is entirely optional —
+everything else in this tool works without it.
+
+To enable it: copy `.env.example` to `.env` in this project's folder and fill in
+`CLOUDIQ_API_KEY` with a personal key from the CloudIQ `/admin` dashboard
+(`https://cloudiq-2t4e.onrender.com/admin`). `.env` is gitignored, so your key never
+gets committed.
 
 ## How to launch
 
@@ -69,7 +82,16 @@ curl http://127.0.0.1:5050   # this frontend
    - **Steps / cfg / seed** — standard diffusion sampling controls.
 3. Hit Generate, compare before/after, tweak, repeat. Past attempts in the session
    show up in the history strip so you can click back to compare (including all
-   outputs from a batched run).
+   outputs from a batched run). Drag the ⤡ handle under the Before/After images to
+   make the preview bigger or smaller — the size is remembered next time you open
+   the page.
+4. Optionally click **Check design fidelity** on whichever before/after pair is
+   currently shown to get a second opinion from a vision model on whether the
+   detail pass kept the same character design (colors/silhouette/pose) rather than
+   drifting into something else. This is a separate, on-demand network call (not run
+   automatically) and requires `CLOUDIQ_API_KEY` to be set — see "Optional: enabling
+   the design-fidelity QA check" above. It can take up to a minute since it may fall
+   back across a few models if the first one is unavailable.
 
 First generation after starting ComfyUI is slow (~2 minutes) because it has to load
 the model into VRAM. Every generation after that is much faster.
@@ -99,3 +121,6 @@ different project), drop the new `.safetensors` file into the matching ComfyUI
   meant to be exposed beyond localhost.
 - `server.log` / `server.err.log` in this folder are just runtime logs from manual
   testing, safe to delete or ignore.
+- The design-fidelity QA check sends both images to CloudIQ (an external, though
+  Accenture-internal, service) as base64 data — don't use it on sprites you don't
+  want leaving this machine.

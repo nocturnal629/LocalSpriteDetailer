@@ -4,14 +4,21 @@ Sprite Detail Frontend - a minimal local UI for the ComfyUI sprite-upscale workf
 Talks to a running ComfyUI server (http://127.0.0.1:8188) on the user's behalf so the
 browser never has to call ComfyUI's API directly (ComfyUI doesn't send CORS headers).
 """
+import base64
 import io
 import json
+import mimetypes
+import os
+import re
 import time
 import uuid
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory, render_template
+
+load_dotenv()
 
 COMFY_URL = "http://127.0.0.1:8188"
 COMFY_INPUT_DIR = Path.home() / "ComfyUI" / "input"
@@ -20,6 +27,11 @@ COMFY_OUTPUT_DIR = Path.home() / "ComfyUI" / "output"
 CHECKPOINT = "sd_xl_base_1.0.safetensors"
 LORA = "pixel-art-xl.safetensors"
 CONTROLNET = "controlnet-canny-sdxl-fp16.safetensors"
+
+# Optional "design-fidelity QA" feature: asks a CloudIQ multimodal model to compare
+# a generated sprite against its source. Not required for the core generate pipeline.
+CLOUDIQ_URL = os.getenv("CLOUDIQ_URL", "https://cloudiq-2t4e.onrender.com")
+CLOUDIQ_API_KEY = os.getenv("CLOUDIQ_API_KEY")
 
 # SDXL's VAE needs dimensions that are multiples of 8. These bounds keep the working
 # resolution in a range SDXL was actually trained for, even for tiny sprite sources
@@ -239,5 +251,106 @@ def serve_output(filename):
     return send_from_directory(COMFY_OUTPUT_DIR, filename)
 
 
+def _basename_from_url(value: str) -> str:
+    """Turn a served image URL (possibly absolute, possibly cache-busted with
+    ?t=...) back into a bare filename, safely discarding any path traversal."""
+    return Path(str(value).split("?", 1)[0]).name
+
+
+def _image_data_url(path: Path) -> str:
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+QA_PROMPT = (
+    "You are QA-checking an AI-detailed pixel-art game sprite against its original "
+    "source image. The FIRST image is the ORIGINAL sprite. The SECOND image is the "
+    "DETAILED version, generated to add shading, sharpness and extra pixel detail "
+    "while intending to keep the exact same character design.\n\n"
+    "Judge only whether the DETAILED version preserved the original's silhouette, "
+    "pose, color palette, and identifying features. Added shading, sharper edges, "
+    "and extra detail are expected and should NOT count against it — only flag it "
+    "if the character/object design itself changed (different colors, proportions, "
+    "pose, or missing/added features).\n\n"
+    "Respond in exactly this format and nothing else:\n"
+    "VERDICT: PRESERVED or DRIFTED\n"
+    "REASON: <one short sentence>"
+)
+
+
+def _parse_qa_reply(reply: str):
+    verdict_match = re.search(r"VERDICT:\s*(PRESERVED|DRIFTED)", reply, re.IGNORECASE)
+    reason_match = re.search(r"REASON:\s*(.+)", reply, re.IGNORECASE)
+    verdict = verdict_match.group(1).upper() if verdict_match else "UNKNOWN"
+    reason = reason_match.group(1).strip() if reason_match else reply.strip()
+    return verdict, reason
+
+
+@app.route("/qa-check", methods=["POST"])
+def qa_check():
+    if not CLOUDIQ_API_KEY:
+        return jsonify({"error": "CLOUDIQ_API_KEY is not set. Add it to a .env file to enable QA checks."}), 500
+
+    data = request.get_json(silent=True) or {}
+    input_name = _basename_from_url(data.get("input_image", ""))
+    output_name = _basename_from_url(data.get("output_image", ""))
+    if not input_name or not output_name:
+        return jsonify({"error": "input_image and output_image are required"}), 400
+
+    input_path = COMFY_INPUT_DIR / input_name
+    output_path = COMFY_OUTPUT_DIR / output_name
+    if not input_path.is_file() or not output_path.is_file():
+        return jsonify({"error": "Could not find one of the images on disk"}), 404
+
+    try:
+        before_data_url = _image_data_url(input_path)
+        after_data_url = _image_data_url(output_path)
+    except OSError as e:
+        return jsonify({"error": f"Could not read image: {e}"}), 500
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": QA_PROMPT},
+                {"type": "image_url", "image_url": {"url": before_data_url}},
+                {"type": "image_url", "image_url": {"url": after_data_url}},
+            ],
+        }
+    ]
+
+    try:
+        resp = requests.post(
+            f"{CLOUDIQ_URL}/v1/chat/completions",
+            headers={"X-API-Key": CLOUDIQ_API_KEY, "Content-Type": "application/json"},
+            json={"messages": messages, "max_tokens": 500},
+            timeout=90,
+        )
+    except requests.RequestException as e:
+        return jsonify({"error": f"Could not reach CloudIQ at {CLOUDIQ_URL}: {e}"}), 502
+
+    if not resp.ok:
+        try:
+            detail = resp.json().get("error", resp.text)
+        except ValueError:
+            detail = resp.text
+        return jsonify({"error": f"CloudIQ QA check failed: {detail}"}), 502
+
+    resp_json = resp.json()
+    try:
+        reply = resp_json["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        reply = ""
+
+    verdict, reason = _parse_qa_reply(reply)
+    return jsonify({
+        "verdict": verdict,
+        "reason": reason,
+        "raw": reply,
+        "model": resp_json.get("served_model"),
+    })
+
+
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5050, debug=False)
+    app.run(host="127.0.0.1", port=5050, debug=False, threaded=True)
