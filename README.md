@@ -15,11 +15,24 @@ here is tied to Outlanders specifically.
   - `models/checkpoints/sd_xl_base_1.0.safetensors`
   - `models/loras/pixel-art-xl.safetensors`
   - `models/controlnet/controlnet-canny-sdxl-fp16.safetensors`
-- This frontend, with its own venv (Flask + requests).
+- This frontend, with its own venv (`pip install -r requirements.txt`: Flask, requests,
+  python-dotenv).
 
 If you ever set this up on a **different machine**, you'd need to redo the ComfyUI
 install (see the ComfyUI section of this project's chat history / ask for the steps
 again) and re-point the paths in `app.py` (see "Changing paths or models" below).
+
+### Optional: enabling the design-fidelity QA check
+
+The "Check design fidelity" button (see "Using it" below) calls out to CloudIQ, an
+Accenture-internal gateway to hosted vision-capable LLMs, to sanity-check that a
+generated sprite still looks like the original character. This is entirely optional —
+everything else in this tool works without it.
+
+To enable it: copy `.env.example` to `.env` in this project's folder and fill in
+`CLOUDIQ_API_KEY` with a personal key from the CloudIQ `/admin` dashboard
+(`https://cloudiq-2t4e.onrender.com/admin`). `.env` is gitignored, so your key never
+gets committed.
 
 ## How to launch
 
@@ -47,8 +60,19 @@ curl http://127.0.0.1:5050   # this frontend
 
 ## Using it
 
-1. Upload any sprite image (works on anything, not just this game's art).
+1. Upload any sprite image (works on anything, not just this game's art) — including
+   small pixel-art sources like Outlanders' 32x32/48x48/64x64/96x96 character sprites.
 2. Adjust the settings:
+   - **Detail scale** — a multiplier applied to the *uploaded sprite's own* dimensions
+     (not a fixed target size), so a 64x64 sprite at 8x works at 512x512 while a
+     non-square 48x96 sprite at 8x works at 384x768 — the source aspect ratio is
+     always preserved instead of being squashed into a square. The working resolution
+     is snapped to a multiple of 8 (SDXL requirement) and shown live under the slider.
+   - **Number of outputs** — how many variations to generate in one run (1–8). All
+     use the same settings and denoise/ControlNet fidelity, just different sampling
+     noise, so you get several candidate detail passes to pick from without
+     re-running generation by hand. Results appear as a row of thumbnails you can
+     click to swap into the After panel.
    - **Denoise** — how much the output is allowed to change from the source. Lower =
      closer to the original, higher = more reinterpreted. Start around 0.5–0.6.
    - **ControlNet strength** — how tightly the output has to match the original
@@ -57,7 +81,21 @@ curl http://127.0.0.1:5050   # this frontend
    - **Prompt / negative prompt** — text guidance, same idea as any SD-based tool.
    - **Steps / cfg / seed** — standard diffusion sampling controls.
 3. Hit Generate, compare before/after, tweak, repeat. Past attempts in the session
-   show up in the history strip so you can click back to compare.
+   show up in the history strip so you can click back to compare (including all
+   outputs from a batched run). Drag the ⤡ handle under the Before/After images to
+   make the preview bigger or smaller — the size is remembered next time you open
+   the page.
+4. Optionally click **Check design fidelity** on whichever before/after pair is
+   currently shown to get a second opinion from a vision model on whether the
+   detail pass kept the same character design (colors/silhouette/pose) rather than
+   drifting into something else. This is a separate, on-demand network call (not run
+   automatically) and requires `CLOUDIQ_API_KEY` to be set — see "Optional: enabling
+   the design-fidelity QA check" above. It can take up to a minute since it may fall
+   back across a few models if the first one is unavailable, and it retries
+   automatically up to 3 times — CloudIQ has been observed to intermittently return
+   a raw server error for this kind of request (long prompt + 2 images), especially
+   under repeated use in a short window; if it still fails after retries, wait a
+   minute and try again. See "Known limitations" below.
 
 First generation after starting ComfyUI is slow (~2 minutes) because it has to load
 the model into VRAM. Every generation after that is much faster.
@@ -87,3 +125,15 @@ different project), drop the new `.safetensors` file into the matching ComfyUI
   meant to be exposed beyond localhost.
 - `server.log` / `server.err.log` in this folder are just runtime logs from manual
   testing, safe to delete or ignore.
+- The design-fidelity QA check sends both images to CloudIQ (an external, though
+  Accenture-internal, service) as base64 data — don't use it on sprites you don't
+  want leaving this machine.
+- CloudIQ has been observed (2026-09-27 testing) to intermittently crash on this
+  feature's specific request shape (a long prompt plus 2 embedded images), returning
+  a raw unhandled-exception page instead of clean JSON — confirmed to originate from
+  CloudIQ's own server, not a network issue here. It got noticeably worse the more
+  requests were sent in a short window during testing, which points at CloudIQ's
+  rate-limiter (10/min) rather than the prompt itself, but that's not confirmed
+  without seeing CloudIQ's Render logs. This app retries up to 3 times to paper over
+  it, which usually works but isn't a real fix — if the QA button becomes
+  consistently unreliable, it likely needs a look on the CloudIQ side.

@@ -20,12 +20,28 @@
   button#gen { margin-top: 18px; width: 100%; padding: 10px; background: #4c8bf5; border: none; border-radius: 6px; color: white; font-size: 14px; cursor: pointer; }
   button#gen:disabled { background: #555; cursor: not-allowed; }
   .results { flex: 1; }
+  :root { --preview-size: 420px; }
+  .compare-wrap { position: relative; margin-bottom: 14px; }
   .compare { display: flex; gap: 16px; }
   .compare .box { flex: 1; text-align: center; }
-  .compare img { max-width: 100%; max-height: 420px; image-rendering: pixelated; background: #111; border-radius: 6px; }
+  .compare img { max-width: 100%; max-height: var(--preview-size); image-rendering: pixelated; background: #111; border-radius: 6px; }
   .compare h3 { font-size: 13px; color: #999; margin: 8px 0; }
+  #resizeHandle {
+    position: absolute; right: 2px; bottom: -14px; width: 20px; height: 20px;
+    cursor: nwse-resize; color: #666; font-size: 16px; line-height: 20px;
+    text-align: center; user-select: none;
+  }
+  #resizeHandle:hover, #resizeHandle.dragging { color: #4c8bf5; }
+  .qa-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; flex-wrap: wrap; }
+  #qaCheck { padding: 6px 12px; background: #333; border: 1px solid #555; border-radius: 6px; color: #eee; font-size: 12px; cursor: pointer; }
+  #qaCheck:disabled { opacity: 0.6; cursor: not-allowed; }
+  #qaResult { font-size: 12px; color: #999; }
+  #qaResult.preserved { color: #7fd48a; }
+  #qaResult.drifted { color: #ffb347; }
+  #qaResult.error { color: #ff6b6b; }
   .settings-readout { margin-top: 14px; font-size: 11px; color: #999; background: #1e1e24; padding: 10px; border-radius: 6px; white-space: pre-wrap; }
   #status { margin-top: 10px; font-size: 12px; color: #ffb347; min-height: 16px; }
+  .batch-results { margin-top: 14px; }
   .history { margin-top: 20px; }
   .history-list { display: flex; gap: 8px; flex-wrap: wrap; }
   .history-list img { width: 64px; height: 64px; object-fit: contain; background: #111; border-radius: 4px; cursor: pointer; border: 2px solid transparent; image-rendering: pixelated; }
@@ -53,14 +69,15 @@
 
       <div class="row">
         <div>
-          <label>Output width <span class="val" id="width_val">512</span></label>
-          <input type="range" id="width" min="128" max="1024" step="8" value="512">
+          <label>Detail scale <span class="val" id="scale_val">8x</span></label>
+          <input type="range" id="scale" min="2" max="16" step="1" value="8">
         </div>
         <div>
-          <label>Output height <span class="val" id="height_val">512</span></label>
-          <input type="range" id="height" min="128" max="1024" step="8" value="512">
+          <label>Number of outputs <span class="val" id="batch_size_val">1</span></label>
+          <input type="range" id="batch_size" min="1" max="8" step="1" value="1">
         </div>
       </div>
+      <div class="settings-readout" id="sizeReadout">Upload a sprite to see the working resolution.</div>
 
       <label>Denoise (higher = more change from original) <span class="val" id="denoise_val">0.55</span></label>
       <input type="range" id="denoise" min="0.1" max="1.0" step="0.01" value="0.55">
@@ -90,17 +107,29 @@
     </div>
 
     <div class="panel results">
-      <div class="compare">
-        <div class="box">
-          <h3>Before</h3>
-          <img id="beforeImg" src="">
+      <div class="compare-wrap">
+        <div class="compare">
+          <div class="box">
+            <h3>Before</h3>
+            <img id="beforeImg" src="">
+          </div>
+          <div class="box">
+            <h3>After</h3>
+            <img id="afterImg" src="">
+          </div>
         </div>
-        <div class="box">
-          <h3>After</h3>
-          <img id="afterImg" src="">
-        </div>
+        <div id="resizeHandle" title="Drag to resize preview">⤡</div>
+      </div>
+      <div class="qa-row">
+        <button id="qaCheck">Check design fidelity</button>
+        <span id="qaResult"></span>
       </div>
       <div class="settings-readout" id="readout">No generation yet.</div>
+
+      <div class="batch-results" id="batchResults" style="display:none;">
+        <h3 style="font-size:13px;color:#999;">Outputs this run (click to compare)</h3>
+        <div class="history-list" id="batchList"></div>
+      </div>
 
       <div class="history">
         <h3 style="font-size:13px;color:#999;">Session history</h3>
@@ -110,17 +139,26 @@
   </div>
 
 <script>
-const sliders = ["width","height","denoise","controlnet_strength","lora_strength","steps","cfg"];
+const sliders = ["denoise","controlnet_strength","lora_strength","steps","cfg"];
 sliders.forEach(id => {
   const el = document.getElementById(id);
   const out = document.getElementById(id + "_val");
   el.addEventListener("input", () => out.textContent = el.value);
 });
 
+document.getElementById("scale").addEventListener("input", () => {
+  document.getElementById("scale_val").textContent = document.getElementById("scale").value + "x";
+  updateSizeReadout();
+});
+document.getElementById("batch_size").addEventListener("input", () => {
+  document.getElementById("batch_size_val").textContent = document.getElementById("batch_size").value;
+});
+
 const drop = document.getElementById("drop");
 const fileInput = document.getElementById("fileInput");
 const preview = document.getElementById("preview");
 let selectedFile = null;
+let origW = 0, origH = 0;
 
 drop.addEventListener("click", () => fileInput.click());
 drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("hover"); });
@@ -133,13 +171,93 @@ fileInput.addEventListener("change", () => { if (fileInput.files.length) setFile
 
 function setFile(file) {
   selectedFile = file;
-  preview.src = URL.createObjectURL(file);
+  const url = URL.createObjectURL(file);
+  preview.src = url;
   preview.style.display = "block";
-  document.getElementById("beforeImg").src = preview.src;
+  document.getElementById("beforeImg").src = url;
+  origW = 0; origH = 0;
+  updateSizeReadout();
+
+  // Read the sprite's real dimensions so the working resolution stays in
+  // proportion to the source instead of squashing non-square sprites into
+  // a fixed square target.
+  const probe = new Image();
+  probe.onload = () => {
+    origW = probe.naturalWidth;
+    origH = probe.naturalHeight;
+    updateSizeReadout();
+  };
+  probe.src = url;
 }
+
+// SDXL wants multiples of 8; keep the working resolution in a range it was
+// actually trained for, even for a tiny 32x32/64x64 sprite source.
+function snapToWorkingDim(value) {
+  const clamped = Math.max(64, Math.min(1536, value));
+  return Math.round(clamped / 8) * 8;
+}
+
+function computeTargetSize() {
+  if (!origW || !origH) return null;
+  const scale = parseInt(document.getElementById("scale").value, 10);
+  return {
+    width: snapToWorkingDim(origW * scale),
+    height: snapToWorkingDim(origH * scale),
+  };
+}
+
+function updateSizeReadout() {
+  const readout = document.getElementById("sizeReadout");
+  const scale = document.getElementById("scale").value;
+  if (!origW || !origH) {
+    readout.textContent = "Upload a sprite to see the working resolution.";
+    return;
+  }
+  const size = computeTargetSize();
+  readout.textContent = `Source ${origW}×${origH} → working at ${size.width}×${size.height} (${scale}x, aspect ratio preserved)`;
+}
+
+// Before/after preview size is user-resizable by dragging the handle in the
+// corner of the compare panel; both images resize together so they stay
+// comparable, and the chosen size is remembered across page loads.
+const PREVIEW_SIZE_KEY = "spriteDetailPreviewSize";
+let previewSize = parseInt(localStorage.getItem(PREVIEW_SIZE_KEY), 10) || 420;
+
+function applyPreviewSize(px) {
+  previewSize = Math.max(120, Math.min(1400, px));
+  document.documentElement.style.setProperty("--preview-size", previewSize + "px");
+}
+applyPreviewSize(previewSize);
+
+const resizeHandle = document.getElementById("resizeHandle");
+let resizing = false;
+let dragStartY = 0;
+let dragStartSize = 0;
+
+resizeHandle.addEventListener("mousedown", e => {
+  resizing = true;
+  dragStartY = e.clientY;
+  dragStartSize = previewSize;
+  resizeHandle.classList.add("dragging");
+  document.body.style.userSelect = "none";
+  e.preventDefault();
+});
+window.addEventListener("mousemove", e => {
+  if (!resizing) return;
+  applyPreviewSize(dragStartSize + (e.clientY - dragStartY));
+});
+window.addEventListener("mouseup", () => {
+  if (!resizing) return;
+  resizing = false;
+  resizeHandle.classList.remove("dragging");
+  document.body.style.userSelect = "";
+  localStorage.setItem(PREVIEW_SIZE_KEY, previewSize);
+});
 
 document.getElementById("gen").addEventListener("click", async () => {
   if (!selectedFile) { setStatus("Pick an image first."); return; }
+  const size = computeTargetSize();
+  if (!size) { setStatus("Still reading the sprite's dimensions, try again in a moment."); return; }
   const btn = document.getElementById("gen");
   btn.disabled = true;
   setStatus("Generating... this can take 30-90s on first run while models load.");
@@ -148,8 +266,9 @@ document.getElementById("gen").addEventListener("click", async () => {
   fd.append("image", selectedFile);
   fd.append("positive_prompt", document.getElementById("positive_prompt").value);
   fd.append("negative_prompt", document.getElementById("negative_prompt").value);
-  fd.append("width", document.getElementById("width").value);
-  fd.append("height", document.getElementById("height").value);
+  fd.append("width", size.width);
+  fd.append("height", size.height);
+  fd.append("batch_size", document.getElementById("batch_size").value);
   fd.append("denoise", document.getElementById("denoise").value);
   fd.append("controlnet_strength", document.getElementById("controlnet_strength").value);
   fd.append("lora_strength", document.getElementById("lora_strength").value);
@@ -161,9 +280,13 @@ document.getElementById("gen").addEventListener("click", async () => {
     const res = await fetch("/generate", { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) { setStatus("Error: " + (data.error || "unknown")); btn.disabled = false; return; }
-    document.getElementById("afterImg").src = data.output_image + "?t=" + Date.now();
+    const outputs = data.output_images.map(u => u + "?t=" + Date.now());
+    document.getElementById("beforeImg").src = data.input_image;
+    document.getElementById("afterImg").src = outputs[0];
+    renderBatch(outputs);
     document.getElementById("readout").textContent = JSON.stringify(data.params, null, 2);
-    setStatus("Done.");
+    setStatus(`Done. ${outputs.length} output${outputs.length > 1 ? "s" : ""} generated.`);
+    clearQaResult();
     loadHistory();
   } catch (err) {
     setStatus("Request failed: " + err);
@@ -173,6 +296,23 @@ document.getElementById("gen").addEventListener("click", async () => {
 
 function setStatus(msg) { document.getElementById("status").textContent = msg; }
 
+function renderBatch(urls) {
+  const wrap = document.getElementById("batchResults");
+  const list = document.getElementById("batchList");
+  list.innerHTML = "";
+  if (urls.length <= 1) { wrap.style.display = "none"; return; }
+  wrap.style.display = "block";
+  urls.forEach(u => {
+    const img = document.createElement("img");
+    img.src = u;
+    img.addEventListener("click", () => {
+      document.getElementById("afterImg").src = u;
+      clearQaResult();
+    });
+    list.appendChild(img);
+  });
+}
+
 async function loadHistory() {
   const res = await fetch("/history");
   const items = await res.json();
@@ -180,17 +320,70 @@ async function loadHistory() {
   list.innerHTML = "";
   items.forEach(item => {
     const img = document.createElement("img");
-    img.src = item.output_image;
+    img.src = item.output_images[0];
     img.title = JSON.stringify(item.params);
     img.addEventListener("click", () => {
       document.getElementById("beforeImg").src = item.input_image;
-      document.getElementById("afterImg").src = item.output_image;
+      document.getElementById("afterImg").src = item.output_images[0];
+      renderBatch(item.output_images);
       document.getElementById("readout").textContent = JSON.stringify(item.params, null, 2);
+      clearQaResult();
     });
     list.appendChild(img);
   });
 }
 loadHistory();
+
+// Design-fidelity QA: sends the currently displayed before/after pair to a
+// CloudIQ multimodal model, which judges whether the generated detail pass
+// kept the same character design (colors/silhouette/pose) rather than
+// drifting into a different-looking sprite. Opt-in / on-demand only — it's
+// an external network call, so it never runs automatically after generate.
+function clearQaResult() {
+  const el = document.getElementById("qaResult");
+  el.textContent = "";
+  el.className = "";
+}
+
+document.getElementById("qaCheck").addEventListener("click", async () => {
+  const beforeSrc = document.getElementById("beforeImg").src;
+  const afterSrc = document.getElementById("afterImg").src;
+  if (!beforeSrc || !afterSrc) {
+    setQaResult("Generate something first.", "error");
+    return;
+  }
+
+  const btn = document.getElementById("qaCheck");
+  btn.disabled = true;
+  setQaResult("Checking with CloudIQ (can take up to a minute)...", "");
+
+  try {
+    const res = await fetch("/qa-check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input_image: beforeSrc, output_image: afterSrc }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setQaResult("Error: " + (data.error || "unknown"), "error");
+    } else if (data.verdict === "PRESERVED") {
+      setQaResult("✅ Design preserved — " + (data.reason || ""), "preserved");
+    } else if (data.verdict === "DRIFTED") {
+      setQaResult("⚠️ Design drifted — " + (data.reason || ""), "drifted");
+    } else {
+      setQaResult("❓ " + (data.reason || data.raw || "Unclear response"), "");
+    }
+  } catch (err) {
+    setQaResult("Request failed: " + err, "error");
+  }
+  btn.disabled = false;
+});
+
+function setQaResult(text, cls) {
+  const el = document.getElementById("qaResult");
+  el.textContent = text;
+  el.className = cls || "";
+}
 </script>
 </body>
 </html>
