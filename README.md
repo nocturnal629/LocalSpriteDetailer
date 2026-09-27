@@ -47,8 +47,19 @@ curl http://127.0.0.1:5050   # this frontend
 
 ## Using it
 
-1. Upload any sprite image (works on anything, not just this game's art).
+1. Upload any sprite image (works on anything, not just this game's art) — including
+   small pixel-art sources like Outlanders' 32x32/48x48/64x64/96x96 character sprites.
 2. Adjust the settings:
+   - **Detail scale** — a multiplier applied to the *uploaded sprite's own* dimensions
+     (not a fixed target size), so a 64x64 sprite at 8x works at 512x512 while a
+     non-square 48x96 sprite at 8x works at 384x768 — the source aspect ratio is
+     always preserved instead of being squashed into a square. The working resolution
+     is snapped to a multiple of 8 (SDXL requirement) and shown live under the slider.
+   - **Number of outputs** — how many variations to generate in one run (1–8). All
+     use the same settings and denoise/ControlNet fidelity, just different sampling
+     noise, so you get several candidate detail passes to pick from without
+     re-running generation by hand. Results appear as a row of thumbnails you can
+     click to swap into the After panel.
    - **Denoise** — how much the output is allowed to change from the source. Lower =
      closer to the original, higher = more reinterpreted. Start around 0.5–0.6.
    - **ControlNet strength** — how tightly the output has to match the original
@@ -57,7 +68,8 @@ curl http://127.0.0.1:5050   # this frontend
    - **Prompt / negative prompt** — text guidance, same idea as any SD-based tool.
    - **Steps / cfg / seed** — standard diffusion sampling controls.
 3. Hit Generate, compare before/after, tweak, repeat. Past attempts in the session
-   show up in the history strip so you can click back to compare.
+   show up in the history strip so you can click back to compare (including all
+   outputs from a batched run).
 
 First generation after starting ComfyUI is slow (~2 minutes) because it has to load
 the model into VRAM. Every generation after that is much faster.

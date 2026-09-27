@@ -21,6 +21,19 @@ CHECKPOINT = "sd_xl_base_1.0.safetensors"
 LORA = "pixel-art-xl.safetensors"
 CONTROLNET = "controlnet-canny-sdxl-fp16.safetensors"
 
+# SDXL's VAE needs dimensions that are multiples of 8. These bounds keep the working
+# resolution in a range SDXL was actually trained for, even for tiny sprite sources
+# (e.g. a 32x32 or 64x64 sprite scaled up client-side by a chosen detail factor).
+MIN_WORKING_DIM = 64
+MAX_WORKING_DIM = 1536
+MAX_BATCH_SIZE = 8
+
+
+def snap_to_working_dim(value: int) -> int:
+    clamped = max(MIN_WORKING_DIM, min(MAX_WORKING_DIM, value))
+    return int(round(clamped / 8) * 8)
+
+
 app = Flask(__name__)
 
 # in-memory session history: list of dicts, newest first
@@ -95,6 +108,10 @@ def build_workflow(image_name: str, params: dict, prefix: str) -> dict:
                 "class_type": "VAEEncode",
                 "inputs": {"pixels": ["4", 0], "vae": ["1", 2]},
             },
+            "10b": {
+                "class_type": "RepeatLatentBatch",
+                "inputs": {"samples": ["10", 0], "amount": params["batch_size"]},
+            },
             "11": {
                 "class_type": "KSampler",
                 "inputs": {
@@ -106,7 +123,7 @@ def build_workflow(image_name: str, params: dict, prefix: str) -> dict:
                     "scheduler": "karras",
                     "positive": ["9", 0],
                     "negative": ["9", 1],
-                    "latent_image": ["10", 0],
+                    "latent_image": ["10b", 0],
                     "denoise": params["denoise"],
                 },
             },
@@ -144,8 +161,9 @@ def generate():
         return val
 
     params = {
-        "width": int(f("width", 512)),
-        "height": int(f("height", 512)),
+        "width": snap_to_working_dim(int(f("width", 512))),
+        "height": snap_to_working_dim(int(f("height", 512))),
+        "batch_size": max(1, min(MAX_BATCH_SIZE, int(f("batch_size", 1)))),
         "denoise": float(f("denoise", 0.55)),
         "controlnet_strength": float(f("controlnet_strength", 0.6)),
         "lora_strength": float(f("lora_strength", 0.8)),
@@ -179,7 +197,7 @@ def generate():
     prompt_id = resp_json["prompt_id"]
 
     # Poll for completion (up to ~5 minutes, to cover cold model loads)
-    output_filename = None
+    output_filenames = []
     for _ in range(300):
         time.sleep(1)
         try:
@@ -189,18 +207,17 @@ def generate():
         if prompt_id in hist:
             outputs = hist[prompt_id].get("outputs", {})
             for node_out in outputs.values():
-                images = node_out.get("images", [])
-                if images:
-                    output_filename = images[0]["filename"]
+                for image in node_out.get("images", []):
+                    output_filenames.append(image["filename"])
             break
 
-    if not output_filename:
+    if not output_filenames:
         return jsonify({"error": "Generation timed out or produced no image"}), 504
 
     entry = {
         "id": job_id,
         "input_image": f"/input-image/{input_name}",
-        "output_image": f"/output-image/{output_filename}",
+        "output_images": [f"/output-image/{name}" for name in output_filenames],
         "params": params,
     }
     HISTORY.insert(0, entry)

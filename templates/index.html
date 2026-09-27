@@ -26,6 +26,7 @@
   .compare h3 { font-size: 13px; color: #999; margin: 8px 0; }
   .settings-readout { margin-top: 14px; font-size: 11px; color: #999; background: #1e1e24; padding: 10px; border-radius: 6px; white-space: pre-wrap; }
   #status { margin-top: 10px; font-size: 12px; color: #ffb347; min-height: 16px; }
+  .batch-results { margin-top: 14px; }
   .history { margin-top: 20px; }
   .history-list { display: flex; gap: 8px; flex-wrap: wrap; }
   .history-list img { width: 64px; height: 64px; object-fit: contain; background: #111; border-radius: 4px; cursor: pointer; border: 2px solid transparent; image-rendering: pixelated; }
@@ -53,14 +54,15 @@
 
       <div class="row">
         <div>
-          <label>Output width <span class="val" id="width_val">512</span></label>
-          <input type="range" id="width" min="128" max="1024" step="8" value="512">
+          <label>Detail scale <span class="val" id="scale_val">8x</span></label>
+          <input type="range" id="scale" min="2" max="16" step="1" value="8">
         </div>
         <div>
-          <label>Output height <span class="val" id="height_val">512</span></label>
-          <input type="range" id="height" min="128" max="1024" step="8" value="512">
+          <label>Number of outputs <span class="val" id="batch_size_val">1</span></label>
+          <input type="range" id="batch_size" min="1" max="8" step="1" value="1">
         </div>
       </div>
+      <div class="settings-readout" id="sizeReadout">Upload a sprite to see the working resolution.</div>
 
       <label>Denoise (higher = more change from original) <span class="val" id="denoise_val">0.55</span></label>
       <input type="range" id="denoise" min="0.1" max="1.0" step="0.01" value="0.55">
@@ -102,6 +104,11 @@
       </div>
       <div class="settings-readout" id="readout">No generation yet.</div>
 
+      <div class="batch-results" id="batchResults" style="display:none;">
+        <h3 style="font-size:13px;color:#999;">Outputs this run (click to compare)</h3>
+        <div class="history-list" id="batchList"></div>
+      </div>
+
       <div class="history">
         <h3 style="font-size:13px;color:#999;">Session history</h3>
         <div class="history-list" id="historyList"></div>
@@ -110,17 +117,26 @@
   </div>
 
 <script>
-const sliders = ["width","height","denoise","controlnet_strength","lora_strength","steps","cfg"];
+const sliders = ["denoise","controlnet_strength","lora_strength","steps","cfg"];
 sliders.forEach(id => {
   const el = document.getElementById(id);
   const out = document.getElementById(id + "_val");
   el.addEventListener("input", () => out.textContent = el.value);
 });
 
+document.getElementById("scale").addEventListener("input", () => {
+  document.getElementById("scale_val").textContent = document.getElementById("scale").value + "x";
+  updateSizeReadout();
+});
+document.getElementById("batch_size").addEventListener("input", () => {
+  document.getElementById("batch_size_val").textContent = document.getElementById("batch_size").value;
+});
+
 const drop = document.getElementById("drop");
 const fileInput = document.getElementById("fileInput");
 const preview = document.getElementById("preview");
 let selectedFile = null;
+let origW = 0, origH = 0;
 
 drop.addEventListener("click", () => fileInput.click());
 drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("hover"); });
@@ -133,13 +149,56 @@ fileInput.addEventListener("change", () => { if (fileInput.files.length) setFile
 
 function setFile(file) {
   selectedFile = file;
-  preview.src = URL.createObjectURL(file);
+  const url = URL.createObjectURL(file);
+  preview.src = url;
   preview.style.display = "block";
-  document.getElementById("beforeImg").src = preview.src;
+  document.getElementById("beforeImg").src = url;
+  origW = 0; origH = 0;
+  updateSizeReadout();
+
+  // Read the sprite's real dimensions so the working resolution stays in
+  // proportion to the source instead of squashing non-square sprites into
+  // a fixed square target.
+  const probe = new Image();
+  probe.onload = () => {
+    origW = probe.naturalWidth;
+    origH = probe.naturalHeight;
+    updateSizeReadout();
+  };
+  probe.src = url;
+}
+
+// SDXL wants multiples of 8; keep the working resolution in a range it was
+// actually trained for, even for a tiny 32x32/64x64 sprite source.
+function snapToWorkingDim(value) {
+  const clamped = Math.max(64, Math.min(1536, value));
+  return Math.round(clamped / 8) * 8;
+}
+
+function computeTargetSize() {
+  if (!origW || !origH) return null;
+  const scale = parseInt(document.getElementById("scale").value, 10);
+  return {
+    width: snapToWorkingDim(origW * scale),
+    height: snapToWorkingDim(origH * scale),
+  };
+}
+
+function updateSizeReadout() {
+  const readout = document.getElementById("sizeReadout");
+  const scale = document.getElementById("scale").value;
+  if (!origW || !origH) {
+    readout.textContent = "Upload a sprite to see the working resolution.";
+    return;
+  }
+  const size = computeTargetSize();
+  readout.textContent = `Source ${origW}×${origH} → working at ${size.width}×${size.height} (${scale}x, aspect ratio preserved)`;
 }
 
 document.getElementById("gen").addEventListener("click", async () => {
   if (!selectedFile) { setStatus("Pick an image first."); return; }
+  const size = computeTargetSize();
+  if (!size) { setStatus("Still reading the sprite's dimensions, try again in a moment."); return; }
   const btn = document.getElementById("gen");
   btn.disabled = true;
   setStatus("Generating... this can take 30-90s on first run while models load.");
@@ -148,8 +207,9 @@ document.getElementById("gen").addEventListener("click", async () => {
   fd.append("image", selectedFile);
   fd.append("positive_prompt", document.getElementById("positive_prompt").value);
   fd.append("negative_prompt", document.getElementById("negative_prompt").value);
-  fd.append("width", document.getElementById("width").value);
-  fd.append("height", document.getElementById("height").value);
+  fd.append("width", size.width);
+  fd.append("height", size.height);
+  fd.append("batch_size", document.getElementById("batch_size").value);
   fd.append("denoise", document.getElementById("denoise").value);
   fd.append("controlnet_strength", document.getElementById("controlnet_strength").value);
   fd.append("lora_strength", document.getElementById("lora_strength").value);
@@ -161,9 +221,11 @@ document.getElementById("gen").addEventListener("click", async () => {
     const res = await fetch("/generate", { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) { setStatus("Error: " + (data.error || "unknown")); btn.disabled = false; return; }
-    document.getElementById("afterImg").src = data.output_image + "?t=" + Date.now();
+    const outputs = data.output_images.map(u => u + "?t=" + Date.now());
+    document.getElementById("afterImg").src = outputs[0];
+    renderBatch(outputs);
     document.getElementById("readout").textContent = JSON.stringify(data.params, null, 2);
-    setStatus("Done.");
+    setStatus(`Done. ${outputs.length} output${outputs.length > 1 ? "s" : ""} generated.`);
     loadHistory();
   } catch (err) {
     setStatus("Request failed: " + err);
@@ -173,6 +235,20 @@ document.getElementById("gen").addEventListener("click", async () => {
 
 function setStatus(msg) { document.getElementById("status").textContent = msg; }
 
+function renderBatch(urls) {
+  const wrap = document.getElementById("batchResults");
+  const list = document.getElementById("batchList");
+  list.innerHTML = "";
+  if (urls.length <= 1) { wrap.style.display = "none"; return; }
+  wrap.style.display = "block";
+  urls.forEach(u => {
+    const img = document.createElement("img");
+    img.src = u;
+    img.addEventListener("click", () => { document.getElementById("afterImg").src = u; });
+    list.appendChild(img);
+  });
+}
+
 async function loadHistory() {
   const res = await fetch("/history");
   const items = await res.json();
@@ -180,11 +256,12 @@ async function loadHistory() {
   list.innerHTML = "";
   items.forEach(item => {
     const img = document.createElement("img");
-    img.src = item.output_image;
+    img.src = item.output_images[0];
     img.title = JSON.stringify(item.params);
     img.addEventListener("click", () => {
       document.getElementById("beforeImg").src = item.input_image;
-      document.getElementById("afterImg").src = item.output_image;
+      document.getElementById("afterImg").src = item.output_images[0];
+      renderBatch(item.output_images);
       document.getElementById("readout").textContent = JSON.stringify(item.params, null, 2);
     });
     list.appendChild(img);
