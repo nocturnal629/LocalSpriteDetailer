@@ -20,10 +20,18 @@
   button#gen { margin-top: 18px; width: 100%; padding: 10px; background: #4c8bf5; border: none; border-radius: 6px; color: white; font-size: 14px; cursor: pointer; }
   button#gen:disabled { background: #555; cursor: not-allowed; }
   .results { flex: 1; }
+  :root { --preview-size: 420px; }
+  .compare-wrap { position: relative; margin-bottom: 14px; }
   .compare { display: flex; gap: 16px; }
   .compare .box { flex: 1; text-align: center; }
-  .compare img { max-width: 100%; max-height: 420px; image-rendering: pixelated; background: #111; border-radius: 6px; }
+  .compare img { max-width: 100%; max-height: var(--preview-size); image-rendering: pixelated; background: #111; border-radius: 6px; }
   .compare h3 { font-size: 13px; color: #999; margin: 8px 0; }
+  #resizeHandle {
+    position: absolute; right: 2px; bottom: -14px; width: 20px; height: 20px;
+    cursor: nwse-resize; color: #666; font-size: 16px; line-height: 20px;
+    text-align: center; user-select: none;
+  }
+  #resizeHandle:hover, #resizeHandle.dragging { color: #4c8bf5; }
   .settings-readout { margin-top: 14px; font-size: 11px; color: #999; background: #1e1e24; padding: 10px; border-radius: 6px; white-space: pre-wrap; }
   #status { margin-top: 10px; font-size: 12px; color: #ffb347; min-height: 16px; }
   .batch-results { margin-top: 14px; }
@@ -92,15 +100,18 @@
     </div>
 
     <div class="panel results">
-      <div class="compare">
-        <div class="box">
-          <h3>Before</h3>
-          <img id="beforeImg" src="">
+      <div class="compare-wrap">
+        <div class="compare">
+          <div class="box">
+            <h3>Before</h3>
+            <img id="beforeImg" src="">
+          </div>
+          <div class="box">
+            <h3>After</h3>
+            <img id="afterImg" src="">
+          </div>
         </div>
-        <div class="box">
-          <h3>After</h3>
-          <img id="afterImg" src="">
-        </div>
+        <div id="resizeHandle" title="Drag to resize preview">⤡</div>
       </div>
       <div class="settings-readout" id="readout">No generation yet.</div>
 
@@ -194,6 +205,43 @@ function updateSizeReadout() {
   const size = computeTargetSize();
   readout.textContent = `Source ${origW}×${origH} → working at ${size.width}×${size.height} (${scale}x, aspect ratio preserved)`;
 }
+
+// Before/after preview size is user-resizable by dragging the handle in the
+// corner of the compare panel; both images resize together so they stay
+// comparable, and the chosen size is remembered across page loads.
+const PREVIEW_SIZE_KEY = "spriteDetailPreviewSize";
+let previewSize = parseInt(localStorage.getItem(PREVIEW_SIZE_KEY), 10) || 420;
+
+function applyPreviewSize(px) {
+  previewSize = Math.max(120, Math.min(1400, px));
+  document.documentElement.style.setProperty("--preview-size", previewSize + "px");
+}
+applyPreviewSize(previewSize);
+
+const resizeHandle = document.getElementById("resizeHandle");
+let resizing = false;
+let dragStartY = 0;
+let dragStartSize = 0;
+
+resizeHandle.addEventListener("mousedown", e => {
+  resizing = true;
+  dragStartY = e.clientY;
+  dragStartSize = previewSize;
+  resizeHandle.classList.add("dragging");
+  document.body.style.userSelect = "none";
+  e.preventDefault();
+});
+window.addEventListener("mousemove", e => {
+  if (!resizing) return;
+  applyPreviewSize(dragStartSize + (e.clientY - dragStartY));
+});
+window.addEventListener("mouseup", () => {
+  if (!resizing) return;
+  resizing = false;
+  resizeHandle.classList.remove("dragging");
+  document.body.style.userSelect = "";
+  localStorage.setItem(PREVIEW_SIZE_KEY, previewSize);
+});
 
 document.getElementById("gen").addEventListener("click", async () => {
   if (!selectedFile) { setStatus("Pick an image first."); return; }
