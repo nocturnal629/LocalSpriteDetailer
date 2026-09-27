@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sprite Detail Frontend</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #1e1e24; color: #eee; margin: 0; padding: 24px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .subtitle { color: #999; margin-bottom: 20px; font-size: 13px; }
+  .layout { display: flex; gap: 24px; align-items: flex-start; }
+  .panel { background: #2a2a33; border-radius: 8px; padding: 16px; }
+  .controls { width: 340px; flex-shrink: 0; }
+  .controls label { display: block; margin-top: 12px; font-size: 12px; color: #bbb; }
+  .controls input[type=text], .controls textarea { width: 100%; box-sizing: border-box; background: #1e1e24; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 6px; font-size: 12px; }
+  .controls textarea { height: 50px; resize: vertical; }
+  .row { display: flex; gap: 8px; }
+  .row > div { flex: 1; }
+  .controls input[type=range] { width: 100%; }
+  .val { float: right; color: #7fd; font-size: 11px; }
+  button#gen { margin-top: 18px; width: 100%; padding: 10px; background: #4c8bf5; border: none; border-radius: 6px; color: white; font-size: 14px; cursor: pointer; }
+  button#gen:disabled { background: #555; cursor: not-allowed; }
+  .results { flex: 1; }
+  .compare { display: flex; gap: 16px; }
+  .compare .box { flex: 1; text-align: center; }
+  .compare img { max-width: 100%; max-height: 420px; image-rendering: pixelated; background: #111; border-radius: 6px; }
+  .compare h3 { font-size: 13px; color: #999; margin: 8px 0; }
+  .settings-readout { margin-top: 14px; font-size: 11px; color: #999; background: #1e1e24; padding: 10px; border-radius: 6px; white-space: pre-wrap; }
+  #status { margin-top: 10px; font-size: 12px; color: #ffb347; min-height: 16px; }
+  .history { margin-top: 20px; }
+  .history-list { display: flex; gap: 8px; flex-wrap: wrap; }
+  .history-list img { width: 64px; height: 64px; object-fit: contain; background: #111; border-radius: 4px; cursor: pointer; border: 2px solid transparent; image-rendering: pixelated; }
+  .history-list img:hover { border-color: #4c8bf5; }
+  #drop { border: 2px dashed #555; border-radius: 6px; padding: 16px; text-align: center; font-size: 12px; color: #999; cursor: pointer; }
+  #drop.hover { border-color: #4c8bf5; color: #eee; }
+  #preview { max-width: 100%; max-height: 100px; margin-top: 8px; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+  <h1>Sprite Detail Frontend</h1>
+  <div class="subtitle">Local UI for the ComfyUI img2img + ControlNet + LoRA pixel-art detail pipeline</div>
+
+  <div class="layout">
+    <div class="panel controls">
+      <div id="drop">Click or drag a sprite image here</div>
+      <input type="file" id="fileInput" accept="image/*" style="display:none">
+      <img id="preview" style="display:none">
+
+      <label>Positive prompt</label>
+      <textarea id="positive_prompt">pixel art, detailed pixel character sprite, sharp clean pixels, retro game character, high detail shading, crisp outlines</textarea>
+
+      <label>Negative prompt</label>
+      <textarea id="negative_prompt">blurry, smooth gradient, photo, realistic, 3d render, low quality, jpeg artifacts, anti-aliased</textarea>
+
+      <div class="row">
+        <div>
+          <label>Output width <span class="val" id="width_val">512</span></label>
+          <input type="range" id="width" min="128" max="1024" step="8" value="512">
+        </div>
+        <div>
+          <label>Output height <span class="val" id="height_val">512</span></label>
+          <input type="range" id="height" min="128" max="1024" step="8" value="512">
+        </div>
+      </div>
+
+      <label>Denoise (higher = more change from original) <span class="val" id="denoise_val">0.55</span></label>
+      <input type="range" id="denoise" min="0.1" max="1.0" step="0.01" value="0.55">
+
+      <label>ControlNet strength (higher = stays closer to original silhouette) <span class="val" id="controlnet_strength_val">0.6</span></label>
+      <input type="range" id="controlnet_strength" min="0.0" max="1.5" step="0.01" value="0.6">
+
+      <label>LoRA strength (pixel-art style) <span class="val" id="lora_strength_val">0.8</span></label>
+      <input type="range" id="lora_strength" min="0.0" max="1.5" step="0.01" value="0.8">
+
+      <div class="row">
+        <div>
+          <label>Steps <span class="val" id="steps_val">30</span></label>
+          <input type="range" id="steps" min="10" max="60" step="1" value="30">
+        </div>
+        <div>
+          <label>CFG <span class="val" id="cfg_val">7.0</span></label>
+          <input type="range" id="cfg" min="1" max="15" step="0.1" value="7.0">
+        </div>
+      </div>
+
+      <label>Seed</label>
+      <input type="text" id="seed" value="42">
+
+      <button id="gen">Generate</button>
+      <div id="status"></div>
+    </div>
+
+    <div class="panel results">
+      <div class="compare">
+        <div class="box">
+          <h3>Before</h3>
+          <img id="beforeImg" src="">
+        </div>
+        <div class="box">
+          <h3>After</h3>
+          <img id="afterImg" src="">
+        </div>
+      </div>
+      <div class="settings-readout" id="readout">No generation yet.</div>
+
+      <div class="history">
+        <h3 style="font-size:13px;color:#999;">Session history</h3>
+        <div class="history-list" id="historyList"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const sliders = ["width","height","denoise","controlnet_strength","lora_strength","steps","cfg"];
+sliders.forEach(id => {
+  const el = document.getElementById(id);
+  const out = document.getElementById(id + "_val");
+  el.addEventListener("input", () => out.textContent = el.value);
+});
+
+const drop = document.getElementById("drop");
+const fileInput = document.getElementById("fileInput");
+const preview = document.getElementById("preview");
+let selectedFile = null;
+
+drop.addEventListener("click", () => fileInput.click());
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("hover"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("hover"));
+drop.addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("hover");
+  if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", () => { if (fileInput.files.length) setFile(fileInput.files[0]); });
+
+function setFile(file) {
+  selectedFile = file;
+  preview.src = URL.createObjectURL(file);
+  preview.style.display = "block";
+  document.getElementById("beforeImg").src = preview.src;
+}
+
+document.getElementById("gen").addEventListener("click", async () => {
+  if (!selectedFile) { setStatus("Pick an image first."); return; }
+  const btn = document.getElementById("gen");
+  btn.disabled = true;
+  setStatus("Generating... this can take 30-90s on first run while models load.");
+
+  const fd = new FormData();
+  fd.append("image", selectedFile);
+  fd.append("positive_prompt", document.getElementById("positive_prompt").value);
+  fd.append("negative_prompt", document.getElementById("negative_prompt").value);
+  fd.append("width", document.getElementById("width").value);
+  fd.append("height", document.getElementById("height").value);
+  fd.append("denoise", document.getElementById("denoise").value);
+  fd.append("controlnet_strength", document.getElementById("controlnet_strength").value);
+  fd.append("lora_strength", document.getElementById("lora_strength").value);
+  fd.append("steps", document.getElementById("steps").value);
+  fd.append("cfg", document.getElementById("cfg").value);
+  fd.append("seed", document.getElementById("seed").value);
+
+  try {
+    const res = await fetch("/generate", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) { setStatus("Error: " + (data.error || "unknown")); btn.disabled = false; return; }
+    document.getElementById("afterImg").src = data.output_image + "?t=" + Date.now();
+    document.getElementById("readout").textContent = JSON.stringify(data.params, null, 2);
+    setStatus("Done.");
+    loadHistory();
+  } catch (err) {
+    setStatus("Request failed: " + err);
+  }
+  btn.disabled = false;
+});
+
+function setStatus(msg) { document.getElementById("status").textContent = msg; }
+
+async function loadHistory() {
+  const res = await fetch("/history");
+  const items = await res.json();
+  const list = document.getElementById("historyList");
+  list.innerHTML = "";
+  items.forEach(item => {
+    const img = document.createElement("img");
+    img.src = item.output_image;
+    img.title = JSON.stringify(item.params);
+    img.addEventListener("click", () => {
+      document.getElementById("beforeImg").src = item.input_image;
+      document.getElementById("afterImg").src = item.output_image;
+      document.getElementById("readout").textContent = JSON.stringify(item.params, null, 2);
+    });
+    list.appendChild(img);
+  });
+}
+loadHistory();
+</script>
+</body>
+</html>
